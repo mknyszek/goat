@@ -7,9 +7,9 @@ import (
 	"io"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/mknyszek/goat"
+	"github.com/mknyszek/goat/cmd/internal/spinner"
 	"github.com/mknyszek/goat/simulation/toolbox"
 
 	"golang.org/x/exp/mmap"
@@ -53,23 +53,12 @@ func main() {
 	fmt.Println("Parsing events...")
 
 	var pMu sync.Mutex
-	progressDone := make(chan struct{})
-	go func() {
-		for {
-			pMu.Lock()
-			prog := p.Progress() * 100.0
-			pMu.Unlock()
-
-			fmt.Printf("Processing... %.4f%%\r", prog)
-			select {
-			case <-progressDone:
-				fmt.Println()
-				close(progressDone)
-				return
-			case <-time.After(time.Second):
-			}
-		}
-	}()
+	spinner.Start(func() float64 {
+		pMu.Lock()
+		prog := p.Progress()
+		pMu.Unlock()
+		return prog
+	}, spinner.Format("Processing... %.4f%%"))
 
 	const maxErrors = 20
 	allocs, frees, gcs := 0, 0, 0
@@ -117,8 +106,7 @@ func main() {
 			break
 		}
 	}
-	progressDone <- struct{}{}
-	<-progressDone
+	spinner.Stop()
 
 	if errcount := len(reuseWithoutFree) + len(doubleFree); errcount != 0 {
 		tooMany := errcount > maxErrors
