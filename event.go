@@ -5,10 +5,11 @@ package goat
 type EventKind uint8
 
 const (
-	EventBad   EventKind = iota
-	EventAlloc           // Allocation.
-	EventFree            // Free.
-	EventGCEnd           // GC mark termination.
+	EventBad     EventKind = iota
+	EventAlloc             // Allocation.
+	EventFree              // Free.
+	EventGCStart           // GC sweep termination.
+	EventGCEnd             // GC mark termination.
 )
 
 // Event represents a single allocation trace event.

@@ -61,10 +61,12 @@ func main() {
 	}, spinner.Format("Processing... %.4f%%"))
 
 	const maxErrors = 20
+	gcStarted := false
 	allocs, frees, gcs := 0, 0, 0
 	var sanity toolbox.AddressSet
 	var reuseWithoutFree []goat.Event
 	var doubleFree []goat.Event
+	var gcMismatch []goat.Event
 	minTicks := ^uint64(0)
 	for {
 		pMu.Lock()
@@ -96,9 +98,19 @@ func main() {
 				doubleFree = append(doubleFree, ev)
 			}
 			frees++
+		case goat.EventGCStart:
+			if *printFlag {
+				fmt.Printf("[%d P %d] GC start\n", ev.Timestamp-minTicks, ev.P)
+			}
+			if gcStarted {
+				gcMismatch = append(gcMismatch, ev)
+			}
 		case goat.EventGCEnd:
 			if *printFlag {
 				fmt.Printf("[%d P %d] GC end\n", ev.Timestamp-minTicks, ev.P)
+			}
+			if !gcStarted {
+				gcMismatch = append(gcMismatch, ev)
 			}
 			gcs++
 		}
@@ -117,8 +129,8 @@ func main() {
 			fmt.Fprintf(os.Stderr, "found %d errors in trace:\n", errcount)
 		}
 		for i := 0; i < errcount; i++ {
-			ts1, ts2 := ^uint64(0), ^uint64(0)
-			var e1, e2 *goat.Event
+			ts1, ts2, ts3 := ^uint64(0), ^uint64(0), ^uint64(0)
+			var e1, e2, e3 *goat.Event
 			if len(reuseWithoutFree) != 0 {
 				ts1 = reuseWithoutFree[0].Timestamp
 				e1 = &reuseWithoutFree[0]
@@ -127,12 +139,23 @@ func main() {
 				ts2 = doubleFree[0].Timestamp
 				e2 = &doubleFree[0]
 			}
-			if ts1 < ts2 {
+			if len(gcMismatch) != 0 {
+				ts3 = gcMismatch[0].Timestamp
+				e3 = &gcMismatch[0]
+			}
+			if ts1 < ts2 && ts1 < ts3 {
 				fmt.Fprintf(os.Stderr, "  allocated over slot 0x%x\n", e1.Address)
 				reuseWithoutFree = reuseWithoutFree[1:]
-			} else {
+			} else if ts2 < ts1 && ts2 < ts3 {
 				fmt.Fprintf(os.Stderr, "  freed free slot 0x%x\n", e2.Address)
 				doubleFree = doubleFree[1:]
+			} else {
+				if e3.Kind == goat.EventGCStart {
+					fmt.Fprintf(os.Stderr, "  gc start while started")
+				} else {
+					fmt.Fprintf(os.Stderr, "  gc end without start")
+				}
+				gcMismatch = gcMismatch[1:]
 			}
 		}
 		if tooMany {

@@ -53,6 +53,7 @@ const (
 	atEvSpanRelease
 	atEvSweep
 	atEvFree
+	atEvSweepTerm
 	atEvMarkTerm
 	atEvSync
 	atEvBatchStart
@@ -412,6 +413,17 @@ func (b *batchReader) nextEvent() error {
 
 			b.next.Timestamp = b.sweepStart
 			b.next.Address = b.freeBase + freeOffset
+		case atEvSweepTerm:
+			haveEvent = true
+			b.next.Kind = EventGCStart
+
+			n, tickDelta, err := parseVarint(b.readBuf[size:])
+			if err != nil {
+				return fmt.Errorf("parsing sweep termination event timestamp: %v", err)
+			}
+			size += n
+
+			b.next.Timestamp = b.syncTick + tickDelta
 		case atEvMarkTerm:
 			haveEvent = true
 			b.next.Kind = EventGCEnd
