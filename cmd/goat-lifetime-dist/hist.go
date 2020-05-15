@@ -8,11 +8,15 @@ type SmallUint32Hist struct {
 	bins []uint64
 }
 
-func (h *SmallUint32Hist) Add(i uint32) {
+func (h *SmallUint32Hist) AddN(i uint32, n uint64) {
 	if i >= uint32(len(h.bins)) {
 		h.bins = append(h.bins, make([]uint64, i-uint32(len(h.bins))+1)...)
 	}
-	h.bins[i]++
+	h.bins[i] += n
+}
+
+func (h *SmallUint32Hist) Add(i uint32) {
+	h.AddN(i, 1)
 }
 
 func (h *SmallUint32Hist) Snapshot() []uint64 {

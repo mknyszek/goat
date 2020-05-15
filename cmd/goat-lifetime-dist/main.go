@@ -22,7 +22,6 @@ import (
 var (
 	outputFile   string
 	samplePeriod uint
-	shardTicks   uint64
 )
 
 func init() {
@@ -68,11 +67,18 @@ func run() error {
 	}, spinner.Format("Processing... %.4f%%"))
 
 	// Map of allocation addresses to the GC in which they were allocated.
-	allocs := make(map[uint64]uint32)
+	type allocData struct {
+		gcData uint32
+		size   uint64
+	}
+	allocs := make(map[uint64]allocData)
 	curGC := uint32(0)
 	gcActive := false
-	allocCount := uint64(0)
-	var lifetimes, bLifetimes SmallUint32Hist
+	var allocCount, freeCount uint64
+	var (
+		lifetimesByObject, lifetimesByABObject SmallUint32Hist
+		lifetimesByBytes, lifetimesByABBytes   SmallUint32Hist
+	)
 	for {
 		pMu.Lock()
 		ev, err := p.Next()
@@ -91,20 +97,26 @@ func run() error {
 				if gcActive {
 					a = 1 << 31
 				}
-				allocs[ev.Address] = a | curGC
+				allocs[ev.Address] = allocData{
+					gcData: a | curGC,
+					size:   ev.Size,
+				}
 			}
 			allocCount++
 		case goat.EventFree:
 			if data, ok := allocs[ev.Address]; ok {
-				allocGCActive := data&(1<<31) != 0
-				allocGC := data &^ (1 << 31)
+				allocGCActive := data.gcData&(1<<31) != 0
+				allocGC := data.gcData &^ (1 << 31)
 				bin := curGC - allocGC
-				lifetimes.Add(bin)
+				lifetimesByObject.Add(bin)
+				lifetimesByBytes.AddN(bin, data.size)
 				if allocGCActive {
-					bLifetimes.Add(bin)
+					lifetimesByABObject.Add(bin)
+					lifetimesByABBytes.AddN(bin, data.size)
 				}
 				delete(allocs, ev.Address)
 			}
+			freeCount++
 		case goat.EventGCStart:
 			gcActive = true
 		case goat.EventGCEnd:
@@ -122,18 +134,24 @@ func run() error {
 		return err
 	}
 	defer f.Close()
-	lf := lifetimes.Snapshot()
-	blf := bLifetimes.Snapshot()
+	olf := lifetimesByObject.Snapshot()
+	abolf := lifetimesByABObject.Snapshot()
+	blf := lifetimesByBytes.Snapshot()
+	abblf := lifetimesByABBytes.Snapshot()
 	fmt.Fprintf(f, "# GeneratedFrom: %s\n", filepath.Base(flag.Arg(0)))
-	fmt.Fprintf(f, "# RealAllocCount: %d\n", allocCount)
+	fmt.Fprintf(f, "# TotalSamplesCount: %d\n", freeCount)
 	fmt.Fprintf(f, "# SamplePeriod: %d\n", samplePeriod)
-	fmt.Fprintf(f, "GCs,Count,BlackCount\n")
-	for i := range lf {
-		bc := uint64(0)
-		if i < len(blf) {
-			bc = blf[i]
+	fmt.Fprintf(f, "GCs,Objects,AllocBlackObjects,Bytes,AllocBlackBytes\n")
+	for i := range olf {
+		obc := uint64(0)
+		if i < len(abolf) {
+			obc = abolf[i]
 		}
-		fmt.Fprintf(f, "%d,%d,%d\n", i, lf[i], bc)
+		bbc := uint64(0)
+		if i < len(abblf) {
+			bbc = abblf[i]
+		}
+		fmt.Fprintf(f, "%d,%d,%d,%d,%d\n", i, olf[i], obc, blf[i], bbc)
 	}
 	return nil
 }
