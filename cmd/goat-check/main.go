@@ -86,17 +86,25 @@ func main() {
 			handleError(fmt.Errorf("parsing events: %v", err), false)
 		}
 		switch ev.Kind {
-		case goat.EventAlloc:
+		case goat.EventAlloc, goat.EventStackAlloc:
 			if *printFlag {
-				fmt.Printf("[%d P %d] alloc(%d) @ 0x%x\n", ev.Timestamp-minTicks, ev.P, ev.Size, ev.Address)
+				stack := ""
+				if ev.Kind == goat.EventStackAlloc {
+					stack = "stack "
+				}
+				fmt.Printf("[%d P %d] %salloc(%d) @ 0x%x\n", ev.Timestamp-minTicks, ev.P, stack, ev.Size, ev.Address)
 			}
 			if ok := sanity.Add(ev.Address); !ok {
 				reuseWithoutFree = append(reuseWithoutFree, ev)
 			}
 			allocs++
-		case goat.EventFree:
+		case goat.EventFree, goat.EventStackFree:
 			if *printFlag {
-				fmt.Printf("[%d P %d] free @ 0x%x\n", ev.Timestamp-minTicks, ev.P, ev.Address)
+				stack := ""
+				if ev.Kind == goat.EventStackFree {
+					stack = "stack "
+				}
+				fmt.Printf("[%d P %d] %sfree @ 0x%x\n", ev.Timestamp-minTicks, ev.P, stack, ev.Address)
 			}
 			if ok := sanity.Remove(ev.Address); !ok {
 				doubleFree = append(doubleFree, ev)

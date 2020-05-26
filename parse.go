@@ -62,6 +62,8 @@ const (
 	atEvSync
 	atEvBatchStart
 	atEvBatchEnd
+	atEvStackAlloc
+	atEvStackFree
 )
 
 func parseVarint(buf []byte) (int, uint64, error) {
@@ -111,7 +113,7 @@ func parseBatchHeader(buf []byte) (int32, uint64, error) {
 
 const headerSize = 4
 
-const supportedVersion uint16 = (uint16(1) << 8) | 14
+const supportedVersion uint16 = (uint16(1) << 8) | 15
 
 func parseHeader(r Source) (uint16, error) {
 	var header [headerSize]byte
@@ -450,6 +452,49 @@ func (b *batchReader) nextEvent() error {
 			return streamEnd
 		case atEvBatchStart:
 			return fmt.Errorf("unexpected header found")
+		case atEvStackAlloc:
+			haveEvent = true
+			b.next.Kind = EventStackAlloc
+
+			// Parse stack order.
+			order := b.readBuf[size]
+			size += 1
+
+			// Parse stack base (stack.lo).
+			n, base, err := parseVarint(b.readBuf[size:])
+			if err != nil {
+				return fmt.Errorf("parsing mark termination event timestamp: %v", err)
+			}
+			size += n
+
+			n, tickDelta, err := parseVarint(b.readBuf[size:])
+			if err != nil {
+				return fmt.Errorf("parsing mark termination event timestamp: %v", err)
+			}
+			size += n
+
+			b.next.Timestamp = b.syncTick + tickDelta
+			b.next.Address = base
+			b.next.Size = uint64(1 << order)
+		case atEvStackFree:
+			haveEvent = true
+			b.next.Kind = EventStackFree
+
+			// Parse stack base (stack.lo).
+			n, base, err := parseVarint(b.readBuf[size:])
+			if err != nil {
+				return fmt.Errorf("parsing mark termination event timestamp: %v", err)
+			}
+			size += n
+
+			n, tickDelta, err := parseVarint(b.readBuf[size:])
+			if err != nil {
+				return fmt.Errorf("parsing mark termination event timestamp: %v", err)
+			}
+			size += n
+
+			b.next.Timestamp = b.syncTick + tickDelta
+			b.next.Address = base
 		default:
 			return fmt.Errorf("unknown event type %d", evKind)
 		}
@@ -497,7 +542,7 @@ func (p *Parser) refill(pid int) error {
 func (p *Parser) next(pid int) (Event, error) {
 	// Grab the current event first.
 	ev := p.batches[pid].next
-	ev.P = int32(pid)
+	ev.P = int32(pid) - 1
 
 	// Get the next event.
 	if err := p.batches[pid].nextEvent(); err != nil && err != streamEnd {

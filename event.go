@@ -9,11 +9,13 @@ package goat
 type EventKind uint8
 
 const (
-	EventBad     EventKind = iota
-	EventAlloc             // Allocation.
-	EventFree              // Free.
-	EventGCStart           // GC sweep termination.
-	EventGCEnd             // GC mark termination.
+	EventBad        EventKind = iota
+	EventAlloc                // Allocation.
+	EventFree                 // Free.
+	EventGCStart              // GC sweep termination.
+	EventGCEnd                // GC mark termination.
+	EventStackAlloc           // Stack allocation.
+	EventStackFree            // Stack free.
 )
 
 // Event represents a single allocation trace event.
@@ -23,11 +25,12 @@ type Event struct {
 	Timestamp uint64
 
 	// Address is the address for the allocation or free.
-	// Only valid when Kind == EventAlloc or Kind == EventFree.
+	// Only valid when Kind == EventAlloc, Kind == EventFree,
+	// Kind == EventStackAlloc, Kind == EventStackFree.
 	Address uint64
 
 	// Size indicates the size of the allocation.
-	// Only valid when Kind == EventAlloc.
+	// Only valid when Kind == EventAlloc or Kind == EventStackAlloc.
 	Size uint64
 
 	// P indicates which processor generated the event.
