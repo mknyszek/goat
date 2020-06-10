@@ -346,14 +346,19 @@ func (b *batchReader) nextEvent() error {
 			b.next.Timestamp = b.syncTick + tickDelta
 			b.next.Address = b.allocBase[class] + allocOffset
 			b.next.Size = classToSize(class) - allocSizeDiff
-		case atEvAllocLargeArrayNoscan:
-			fallthrough
-		case atEvAllocLargeArray:
-			b.next.Array = true
-			fallthrough
-		case atEvAllocLargeNoscan:
-			fallthrough
-		case atEvAllocLarge:
+			b.next.PointerFree = class&1 != 0
+			if b.next.PointerFree && b.next.Size < 16 {
+				// BUG: The trace contains the data for the allocation
+				// which triggered a tiny block allocation, not for the
+				// tiny block allocation itself, and does NOT contain
+				// information about other tiny allocations which did
+				// not trigger a new allocation. So, treat this as a
+				// tiny allocator block (size == 16 and noscan). The
+				// address should be appropriately aligned.
+				b.next.Size = 16
+				b.next.Array = false
+			}
+		case atEvAllocLarge, atEvAllocLargeNoscan, atEvAllocLargeArray, atEvAllocLargeArrayNoscan:
 			haveEvent = true
 			b.next.Kind = EventAlloc
 
@@ -381,6 +386,15 @@ func (b *batchReader) nextEvent() error {
 			b.next.Timestamp = b.syncTick + tickDelta
 			b.next.Address = addr
 			b.next.Size = allocSize
+			switch evKind {
+			case atEvAllocLargeArrayNoscan:
+				b.next.PointerFree = true
+				b.next.Array = true
+			case atEvAllocLargeArray:
+				b.next.Array = true
+			case atEvAllocLargeNoscan:
+				b.next.PointerFree = true
+			}
 		case atEvSpanRelease:
 			// Parse class.
 			class := b.readBuf[size]

@@ -41,6 +41,10 @@ type Event struct {
 	// an array type.
 	Array bool
 
+	// PointerFree indicates whether an object allocation
+	// has pointers in it.
+	PointerFree bool
+
 	// Kind indicates what kind of event this is.
 	// This may be assumed to always be valid.
 	Kind EventKind
