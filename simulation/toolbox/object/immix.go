@@ -74,7 +74,7 @@ const (
 	immixNumSpanClasses
 )
 
-const immixTinyMaxSize = 64
+const immixTinyMaxSize = 128
 
 var immixClassToPages = [immixNumSpanClasses]toolbox.Pages{0, 1, 1, 16}
 
@@ -157,15 +157,8 @@ func (s *immixSpan) alloc(ctx toolbox.Context, headerSize, size toolbox.Bytes) t
 			ctx.Stats.Allocs++
 		}
 		// Update reference counts.
-		effectiveSize := size
-		if s.class == immixTiny {
-			effectiveSize = immixTinyMaxSize
-		}
 		startLine := uint64(lo.Diff(s.base) / s.lineSize)
-		endLine := uint64((lo.Diff(s.base) + effectiveSize - 1) / s.lineSize)
-		if s.class == immixTiny && endLine >= s.lineCount {
-			endLine = s.lineCount - 1
-		}
+		endLine := uint64((lo.Diff(s.base) + size - 1) / s.lineSize)
 		for i := startLine; i <= endLine; i++ {
 			if s.lineRefCount[i] == 0 {
 				ctx.Stats.AddOther(immixLinesStat, 1)
@@ -412,12 +405,14 @@ fresh:
 	}
 	if spc == immixTiny {
 		// The first line is occupied by ptr-scan bits.
-		s.bumpLo = x.Add(s.lineSize)
+		s.bumpLo = x.Add(2 * s.lineSize)
 		s.lineRefCount[0] = 1
+		s.lineRefCount[1] = 1
 		s.unused[0] = s.lineSize
-		ctx.Stats.FreeBytes -= uint64(s.lineSize)
-		ctx.Stats.UnusedBytes += uint64(s.lineSize)
-		ctx.Stats.AddOther(immixTinyWasteStat, uint64(s.lineSize))
+		s.unused[1] = s.lineSize
+		ctx.Stats.FreeBytes -= uint64(2 * s.lineSize)
+		ctx.Stats.UnusedBytes += uint64(2 * s.lineSize)
+		ctx.Stats.AddOther(immixTinyWasteStat, uint64(2*s.lineSize))
 	}
 	g.addToIndex(s)
 	if overflow {
@@ -541,15 +536,8 @@ func (g *Immix) DeadObject(ctx toolbox.Context, addr toolbox.Address) {
 	size := dataSize + headerSize
 
 	// Mark the object's space as free.
-	effectiveSize := size
-	if s.class == immixTiny {
-		effectiveSize = immixTinyMaxSize
-	}
 	startLine := uint64(addr.Diff(s.base) / s.lineSize)
-	endLine := uint64((addr.Diff(s.base) + effectiveSize - 1) / s.lineSize)
-	if s.class == immixTiny && endLine >= s.lineCount {
-		endLine = s.lineCount - 1
-	}
+	endLine := uint64((addr.Diff(s.base) + size - 1) / s.lineSize)
 	for i := startLine; i <= endLine; i++ {
 		s.lineRefDec[i]++
 	}
@@ -608,10 +596,10 @@ func (g *Immix) DeadObject(ctx toolbox.Context, addr toolbox.Address) {
 			} else if s.class == immixMedium {
 				ctx.Stats.SubOther(immixMediumWasteStat, uint64(s.unused[i]))
 			}
-			if ((s.class == immixTiny && i != 0) || s.class != immixTiny) && s.lineRefCount[i] != 0 {
+			if ((s.class == immixTiny && i > 1) || s.class != immixTiny) && s.lineRefCount[i] != 0 {
 				ctx.Stats.SubOther(immixLinesStat, 1)
 			}
-			if ((s.class == immixTiny && i != 0) || s.class != immixTiny) && s.lineRefCount[i] != s.lineRefDec[i] {
+			if ((s.class == immixTiny && i > 1) || s.class != immixTiny) && s.lineRefCount[i] != s.lineRefDec[i] {
 				panic("totally free span doesn't have matching ref count and dec")
 			}
 		}
