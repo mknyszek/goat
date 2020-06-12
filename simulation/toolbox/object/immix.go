@@ -68,14 +68,17 @@ type immixSpanClass uint8
 
 const (
 	immixLarge immixSpanClass = iota
+	immixTiny
 	immixSmall
 	immixMedium
 	immixNumSpanClasses
 )
 
-var immixClassToPages = [immixNumSpanClasses]toolbox.Pages{0, 1, 16}
+const immixTinyMaxSize = 64
 
-var immixClassToLineSize = [immixNumSpanClasses]toolbox.Bytes{0, 256, 4096}
+var immixClassToPages = [immixNumSpanClasses]toolbox.Pages{0, 1, 1, 16}
+
+var immixClassToLineSize = [immixNumSpanClasses]toolbox.Bytes{0, 128, 256, 4096}
 
 type immixSpan struct {
 	currList     *immixSpanList
@@ -100,14 +103,33 @@ func (s *immixSpan) alloc(ctx toolbox.Context, headerSize, size toolbox.Bytes) t
 	if s == nil {
 		return 0
 	}
-	lo := s.bumpLo.AlignUp(8)
+	var align toolbox.Bytes
+	switch s.class {
+	case immixTiny:
+		if size >= 8 {
+			align = 8
+		} else if size >= 4 {
+			align = 4
+		} else if size >= 2 {
+			align = 2
+		} else {
+			align = 1
+		}
+	case immixSmall:
+		align = 8
+	case immixMedium:
+		align = 128
+	}
+	lo := s.bumpLo.AlignUp(align)
 	if lo.Add(size) <= s.bumpHi {
 		unused := lo.Add(headerSize).Diff(s.bumpLo)
 		{
 			ctx.Stats.AddOther(immixHeaderStat, uint64(headerSize))
 			ctx.Stats.FreeBytes -= uint64(unused)
 			ctx.Stats.UnusedBytes += uint64(unused)
-			if s.class == immixSmall {
+			if s.class == immixTiny {
+				ctx.Stats.AddOther(immixTinyWasteStat, uint64(unused))
+			} else if s.class == immixSmall {
 				ctx.Stats.AddOther(immixSmallWasteStat, uint64(unused))
 			} else if s.class == immixMedium {
 				ctx.Stats.AddOther(immixMediumWasteStat, uint64(unused))
@@ -121,8 +143,10 @@ func (s *immixSpan) alloc(ctx toolbox.Context, headerSize, size toolbox.Bytes) t
 				if i == endLine {
 					nnlo = lo.Add(headerSize)
 				}
-				total += nnlo.Diff(nlo)
-				s.unused[i] += nnlo.Diff(nlo)
+				if nnlo.Diff(nlo) != 0 {
+					total += nnlo.Diff(nlo)
+					s.unused[i] += nnlo.Diff(nlo)
+				}
 				nlo = nnlo
 			}
 			if total != unused {
@@ -133,8 +157,15 @@ func (s *immixSpan) alloc(ctx toolbox.Context, headerSize, size toolbox.Bytes) t
 			ctx.Stats.Allocs++
 		}
 		// Update reference counts.
+		effectiveSize := size
+		if s.class == immixTiny {
+			effectiveSize = immixTinyMaxSize
+		}
 		startLine := uint64(lo.Diff(s.base) / s.lineSize)
-		endLine := uint64((lo.Diff(s.base) + size - 1) / s.lineSize)
+		endLine := uint64((lo.Diff(s.base) + effectiveSize - 1) / s.lineSize)
+		if s.class == immixTiny && endLine >= s.lineCount {
+			endLine = s.lineCount - 1
+		}
 		for i := startLine; i <= endLine; i++ {
 			if s.lineRefCount[i] == 0 {
 				ctx.Stats.AddOther(immixLinesStat, 1)
@@ -161,7 +192,9 @@ func (s *immixSpan) refill(ctx toolbox.Context) {
 	if unused != 0 {
 		ctx.Stats.FreeBytes -= uint64(unused)
 		ctx.Stats.UnusedBytes += uint64(unused)
-		if s.class == immixSmall {
+		if s.class == immixTiny {
+			ctx.Stats.AddOther(immixTinyWasteStat, uint64(unused))
+		} else if s.class == immixSmall {
 			ctx.Stats.AddOther(immixSmallWasteStat, uint64(unused))
 		} else if s.class == immixMedium {
 			ctx.Stats.AddOther(immixMediumWasteStat, uint64(unused))
@@ -175,8 +208,10 @@ func (s *immixSpan) refill(ctx toolbox.Context) {
 			if i == endLine {
 				nlo = s.bumpHi
 			}
-			total += nlo.Diff(lo)
-			s.unused[i] += nlo.Diff(lo)
+			if nlo.Diff(lo) != 0 {
+				total += nlo.Diff(lo)
+				s.unused[i] += nlo.Diff(lo)
+			}
 			lo = nlo
 		}
 		if total != unused {
@@ -220,7 +255,9 @@ func (s *immixSpan) sweep(ctx toolbox.Context) {
 			if s.lineRefDec[i] != 0 {
 				ctx.Stats.SubOther(immixLinesStat, 1)
 			}
-			if s.class == immixSmall {
+			if s.class == immixTiny {
+				ctx.Stats.SubOther(immixTinyWasteStat, uint64(s.unused[i]))
+			} else if s.class == immixSmall {
 				ctx.Stats.SubOther(immixSmallWasteStat, uint64(s.unused[i]))
 			} else if s.class == immixMedium {
 				ctx.Stats.SubOther(immixMediumWasteStat, uint64(s.unused[i]))
@@ -285,6 +322,7 @@ func NewImmix(pa toolbox.PageAllocator) *Immix {
 const (
 	immixHeaderStat      = "ImmixLiveObjectHeaderBytes"
 	immixLinesStat       = "ImmixLinesOccupied"
+	immixTinyWasteStat   = "ImmixTinyObjectUnusedBytes"
 	immixSmallWasteStat  = "ImmixSmallObjectUnusedBytes"
 	immixMediumWasteStat = "ImmixMediumObjectUnusedBytes"
 )
@@ -293,6 +331,7 @@ func (g *Immix) RegisterStats(stats *simulation.Stats) {
 	g.pageAllocator.RegisterStats(stats)
 	stats.RegisterOther(immixHeaderStat)
 	stats.RegisterOther(immixLinesStat)
+	stats.RegisterOther(immixTinyWasteStat)
 	stats.RegisterOther(immixSmallWasteStat)
 	stats.RegisterOther(immixMediumWasteStat)
 }
@@ -371,6 +410,15 @@ fresh:
 		bumpLo:      x,
 		bumpHi:      x.Add(npages.Bytes(pageSize)),
 	}
+	if spc == immixTiny {
+		// The first line is occupied by ptr-scan bits.
+		s.bumpLo = x.Add(s.lineSize)
+		s.lineRefCount[0] = 1
+		s.unused[0] = s.lineSize
+		ctx.Stats.FreeBytes -= uint64(s.lineSize)
+		ctx.Stats.UnusedBytes += uint64(s.lineSize)
+		ctx.Stats.AddOther(immixTinyWasteStat, uint64(s.lineSize))
+	}
 	g.addToIndex(s)
 	if overflow {
 		g.caches[ctx.P].overflow[spc] = s
@@ -398,9 +446,12 @@ func (g *Immix) AllocObject(ctx toolbox.Context, size toolbox.Bytes, array, _ bo
 		panic("allocation must be called with a P")
 	}
 	if size <= 32<<10 {
-		headerSize := toolbox.Bytes(8)
-		if array && size > 472 {
+		headerSize := toolbox.Bytes(0)
+		if size > immixTinyMaxSize {
 			headerSize += 8
+			if array && size > 464 {
+				headerSize += 8
+			}
 		}
 		dataSize := size
 		size += headerSize
@@ -412,6 +463,9 @@ func (g *Immix) AllocObject(ctx toolbox.Context, size toolbox.Bytes, array, _ bo
 		spc := immixMedium
 		if size <= 2<<10 {
 			spc = immixSmall
+		}
+		if size <= immixTinyMaxSize {
+			spc = immixTiny
 		}
 		var x toolbox.Address
 		s := c.alloc[spc]
@@ -475,18 +529,27 @@ func (g *Immix) DeadObject(ctx toolbox.Context, addr toolbox.Address) {
 	sizeVal := g.objectSizes[addr]
 	delete(g.objectSizes, addr)
 	headerSize := toolbox.Bytes(0)
-	if sizeVal&1 != 0 {
-		headerSize += 8
-	}
-	if sizeVal&(1<<1) != 0 {
-		headerSize += 8
-	}
 	dataSize := sizeVal >> 2
+	if dataSize > immixTinyMaxSize {
+		if sizeVal&1 != 0 {
+			headerSize += 8
+		}
+		if sizeVal&(1<<1) != 0 {
+			headerSize += 8
+		}
+	}
 	size := dataSize + headerSize
 
 	// Mark the object's space as free.
+	effectiveSize := size
+	if s.class == immixTiny {
+		effectiveSize = immixTinyMaxSize
+	}
 	startLine := uint64(addr.Diff(s.base) / s.lineSize)
-	endLine := uint64((addr.Diff(s.base) + size - 1) / s.lineSize)
+	endLine := uint64((addr.Diff(s.base) + effectiveSize - 1) / s.lineSize)
+	if s.class == immixTiny && endLine >= s.lineCount {
+		endLine = s.lineCount - 1
+	}
 	for i := startLine; i <= endLine; i++ {
 		s.lineRefDec[i]++
 	}
@@ -501,7 +564,9 @@ func (g *Immix) DeadObject(ctx toolbox.Context, addr toolbox.Address) {
 	// up on sweep).
 	ctx.Stats.ObjectBytes -= uint64(dataSize)
 	ctx.Stats.UnusedBytes += uint64(dataSize)
-	if s.class == immixSmall {
+	if s.class == immixTiny {
+		ctx.Stats.AddOther(immixTinyWasteStat, uint64(dataSize))
+	} else if s.class == immixSmall {
 		ctx.Stats.AddOther(immixSmallWasteStat, uint64(dataSize))
 	} else if s.class == immixMedium {
 		ctx.Stats.AddOther(immixMediumWasteStat, uint64(dataSize))
@@ -536,15 +601,17 @@ func (g *Immix) DeadObject(ctx toolbox.Context, addr toolbox.Address) {
 		for i := uint64(0); i < s.lineCount; i++ {
 			ctx.Stats.FreeBytes += uint64(s.unused[i])
 			ctx.Stats.UnusedBytes -= uint64(s.unused[i])
-			if s.class == immixSmall {
+			if s.class == immixTiny {
+				ctx.Stats.SubOther(immixTinyWasteStat, uint64(s.unused[i]))
+			} else if s.class == immixSmall {
 				ctx.Stats.SubOther(immixSmallWasteStat, uint64(s.unused[i]))
 			} else if s.class == immixMedium {
 				ctx.Stats.SubOther(immixMediumWasteStat, uint64(s.unused[i]))
 			}
-			if s.lineRefCount[i] != 0 {
+			if ((s.class == immixTiny && i != 0) || s.class != immixTiny) && s.lineRefCount[i] != 0 {
 				ctx.Stats.SubOther(immixLinesStat, 1)
 			}
-			if s.lineRefCount[i] != s.lineRefDec[i] {
+			if ((s.class == immixTiny && i != 0) || s.class != immixTiny) && s.lineRefCount[i] != s.lineRefDec[i] {
 				panic("totally free span doesn't have matching ref count and dec")
 			}
 		}
