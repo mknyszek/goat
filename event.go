@@ -37,6 +37,16 @@ type Event struct {
 	// Valid for all events.
 	P int32
 
+	// PC is the program counter that is considered to have
+	// "triggered" an allocation. The definition is necessarily
+	// fuzzy, but is useful for simulation allocation-site based
+	// allocators.
+	//
+	// This field is only non-zero if Kind == EventAlloc and an
+	// allocation site could reasonably be assigned to the allocation
+	// during the trace.
+	PC uint64
+
 	// Array indicates whether an allocation was for
 	// an array type.
 	Array bool

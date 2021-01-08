@@ -64,6 +64,8 @@ const (
 	atEvBatchEnd
 	atEvStackAlloc
 	atEvStackFree
+	atEvAllocPC
+	atEvAllocArrayPC
 )
 
 func parseVarint(buf []byte) (int, uint64, error) {
@@ -308,10 +310,10 @@ func (b *batchReader) nextEvent() error {
 			}
 			size += n
 			b.allocBase[class] = base
-		case atEvAllocArray:
+		case atEvAllocArray, atEvAllocArrayPC:
 			b.next.Array = true
 			fallthrough
-		case atEvAlloc:
+		case atEvAlloc, atEvAllocPC:
 			haveEvent = true
 			b.next.Kind = EventAlloc
 
@@ -333,6 +335,16 @@ func (b *batchReader) nextEvent() error {
 			}
 			size += n
 
+			// Parse alloc PC, if it applies.
+			allocpc := uint64(0)
+			if evKind == atEvAllocPC || evKind == atEvAllocArrayPC {
+				n, allocpc, err = parseVarint(b.readBuf[size:])
+				if err != nil {
+					return fmt.Errorf("parsing pc for alloc: %v", err)
+				}
+				size += n
+			}
+
 			// Parse tick delta for alloc event.
 			n, tickDelta, err := parseVarint(b.readBuf[size:])
 			if err != nil {
@@ -346,6 +358,7 @@ func (b *batchReader) nextEvent() error {
 			b.next.Timestamp = b.syncTick + tickDelta
 			b.next.Address = b.allocBase[class] + allocOffset
 			b.next.Size = classToSize(class) - allocSizeDiff
+			b.next.PC = allocpc
 			b.next.PointerFree = class&1 != 0
 			if b.next.PointerFree && b.next.Size < 16 {
 				// BUG: The trace contains the data for the allocation
